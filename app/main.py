@@ -17,7 +17,7 @@ app = FastAPI(title="Health Analysis API")
 
 # Get API key and model from environment variables
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat-v3-0324:free")
+MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-r1-zero:free")
 
 class HealthData(BaseModel):
     oxygen_saturation: float = Field(..., description="Oxygen Saturation Level (%)", ge=0, le=100)
