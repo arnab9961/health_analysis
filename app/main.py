@@ -189,6 +189,11 @@ async def analyze_health_data(health_data: HealthData):
         raise HTTPException(status_code=500, detail=f"Error performing analysis: {str(e)}")
 
 if __name__ == "__main__":
+    import os
     import uvicorn
+
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    is_render = os.getenv("RENDER", "") != ""
+    
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=not is_render)
+
