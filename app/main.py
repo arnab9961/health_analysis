@@ -2,22 +2,24 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 import os
 import json
-import httpx
 from dotenv import load_dotenv
 from typing import Dict, Any, Optional
+from groq import Groq  # Changed from OpenAI to Groq
 
 # Load environment variables with explicit path
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
-# For debugging
-api_key = os.getenv("OPENROUTER_API_KEY")
-print(f"API Key loaded: {'Present' if api_key else 'Missing'}")
+# Get API key from environment variables
+API_KEY = os.getenv("GROQ_API_KEY")  # Changed from OPENAI_API_KEY to GROQ_API_KEY
+print(f"API Key loaded: {'Present' if API_KEY else 'Missing'}")
 
 app = FastAPI(title="Health Analysis API")
 
-# Get API key and model from environment variables
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-r1-zero:free")
+# Get model from environment variables
+MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/llama-4-maverick-17b-128e-instruct")  # Changed default model to Deepseek
+
+# Initialize Groq client
+client = Groq(api_key=API_KEY)  # Changed from AsyncOpenAI to Groq
 
 class HealthData(BaseModel):
     oxygen_saturation: float = Field(..., description="Oxygen Saturation Level (%)", ge=0, le=100)
@@ -38,10 +40,23 @@ class AnalysisResponse(BaseModel):
 def read_root():
     return {"message": "Welcome to the Health Analysis API"}
 
+async def get_analysis_from_groq(prompt: str):
+    """Get analysis from Groq API"""
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"Groq API error: {str(e)}")
+        raise e
+
 @app.post("/analyze/", response_model=AnalysisResponse)
 async def analyze_health_data(health_data: HealthData):
-    if not OPENROUTER_API_KEY:
-        raise HTTPException(status_code=500, detail="OpenRouter API key not configured")
+    if not API_KEY:
+        raise HTTPException(status_code=500, detail="Groq API key not configured")
     
     # Normal ranges for health metrics
     normal_ranges = {
@@ -72,8 +87,6 @@ async def analyze_health_data(health_data: HealthData):
         }
     
     # Check blood pressure (simplified)
-    # In a production app, you'd parse the systolic/diastolic values separately
-    # This is just a demonstration
     bp_parts = health_data.blood_pressure.split("/")
     if len(bp_parts) == 2:
         try:
@@ -130,53 +143,40 @@ async def analyze_health_data(health_data: HealthData):
     if "oxygen_saturation" in abnormal_readings or "pulse_rate" in abnormal_readings or "blood_pressure" in abnormal_readings:
         alert_level = "Critical"
     
-    # Generate analysis using OpenRouter API
+    # Generate analysis using Groq API
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            prompt = f"""
-                Please analyze the following health data and provide detailed medical insights and recommendations. 
-                Be professional but easy to understand. Focus especially on any abnormal readings.
+        prompt = f"""
+            Please analyze the following health data and provide detailed medical insights and recommendations. 
+            Be professional but easy to understand. Focus especially on any abnormal readings.
+            
+            Health Data:
+            - Oxygen Saturation: {health_data.oxygen_saturation}% (Normal range: 80-100%)
+            - Pulse Rate: {health_data.pulse_rate} bpm (Normal range: 50-100 bpm)
+            - Blood Pressure: {health_data.blood_pressure} mm Hg (Normal range: 80-120)
+            - Body Temperature: {health_data.body_temperature}°F (Normal range: 95-105°F)
+            - Blood Sugar: {health_data.blood_sugar} mg/dL (Normal range: 70-140 mg/dL)
+            - Rest Urine: {health_data.rest_urine} ml (Normal range: 800-2000 ml)
+            - Water Intake: {health_data.water_intake} liters (Normal range: 2.7-3.7 liters)
+            
+            Abnormal Readings: {json.dumps(abnormal_readings, indent=2)}
+            Alert Level: {alert_level}
+            
+            Provide a comprehensive analysis of this data and clear recommendations for the patient.
+            Always format your response with an Analysis section followed by a Recommendations section.
+        """
+        
+        try:
+            analysis_text = await get_analysis_from_groq(prompt)
                 
-                Health Data:
-                - Oxygen Saturation: {health_data.oxygen_saturation}% (Normal range: 80-100%)
-                - Pulse Rate: {health_data.pulse_rate} bpm (Normal range: 50-100 bpm)
-                - Blood Pressure: {health_data.blood_pressure} mm Hg (Normal range: 80-120)
-                - Body Temperature: {health_data.body_temperature}°F (Normal range: 95-105°F)
-                - Blood Sugar: {health_data.blood_sugar} mg/dL (Normal range: 70-140 mg/dL)
-                - Rest Urine: {health_data.rest_urine} ml (Normal range: 800-2000 ml)
-                - Water Intake: {health_data.water_intake} liters (Normal range: 2.7-3.7 liters)
-                
-                Abnormal Readings: {json.dumps(abnormal_readings, indent=2)}
-                Alert Level: {alert_level}
-                
-                Provide a comprehensive analysis of this data and clear recommendations for the patient.
-            """
-            
-            response = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": MODEL_NAME,
-                    "messages": [{"role": "user", "content": prompt}]
-                }
-            )
-            
-            result = response.json()
-            
-            if "choices" not in result or len(result["choices"]) == 0:
-                raise HTTPException(status_code=500, detail="Failed to get analysis from model")
-                
-            analysis_text = result["choices"][0]["message"]["content"]
-            
-            # Split the text into analysis and recommendations
-            # This is a simple split - in production you might want a more sophisticated approach
-            analysis_parts = analysis_text.split("Recommendations:")
-            
-            analysis = analysis_parts[0].strip()
-            recommendations = analysis_parts[1].strip() if len(analysis_parts) > 1 else "No specific recommendations provided."
+            # More robust parsing
+            if "Recommendations:" in analysis_text:
+                analysis_parts = analysis_text.split("Recommendations:")
+                analysis = analysis_parts[0].strip()
+                recommendations = analysis_parts[1].strip() if len(analysis_parts) > 1 else "No specific recommendations provided."
+            else:
+                # If we can't split, just provide the whole text as analysis
+                analysis = analysis_text
+                recommendations = "No specific recommendations section found in the response."
             
             return AnalysisResponse(
                 analysis=analysis,
@@ -184,9 +184,16 @@ async def analyze_health_data(health_data: HealthData):
                 alert_level=alert_level,
                 abnormal_readings=abnormal_readings
             )
-            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"Groq API error details: {error_details}")
+            raise HTTPException(status_code=500, detail=f"Groq API Error: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error performing analysis: {str(e)}")
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Full error details: {error_details}")
+        raise HTTPException(status_code=500, detail=f"API Error: {str(e)}")
 
 if __name__ == "__main__":
     import os
